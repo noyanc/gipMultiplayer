@@ -9,7 +9,7 @@
 class ClientPacketHandler : public znet::PacketHandler<ClientPacketHandler,
 	NodeStatePacket, NodeLeavePacket, PlayerFirePacket, PlayerHitPacket, PlayerKilledPacket,
 	LobbyStatePacket, StartMatchPacket, LobbyKickPacket, KeepAlivePacket, PingPacket, PongPacket,
-	gTeamVoiceSessionPacket, gTeamVoiceDownlinkPacket> {
+	ChatMessagePacket, PlayerPingSnapshotPacket, gTeamVoiceSessionPacket, gTeamVoiceDownlinkPacket> {
 public:
 	ClientPacketHandler(GameBackendRemote* b) : backend(b) {}
 
@@ -26,6 +26,8 @@ public:
 	void OnPacket(std::shared_ptr<StartMatchPacket> p) {backend->enqueuePacket(std::static_pointer_cast<znet::Packet>(p));}
 	void OnPacket(std::shared_ptr<LobbyKickPacket> p) {backend->enqueuePacket(std::static_pointer_cast<znet::Packet>(p));}
 	void OnPacket(std::shared_ptr<KeepAlivePacket> p) {backend->enqueuePacket(std::static_pointer_cast<znet::Packet>(p));}
+	void OnPacket(std::shared_ptr<ChatMessagePacket> p) {backend->enqueuePacket(std::static_pointer_cast<znet::Packet>(p));}
+	void OnPacket(std::shared_ptr<PlayerPingSnapshotPacket> p) {backend->enqueuePacket(std::static_pointer_cast<znet::Packet>(p));}
 
 	void OnPacket(std::shared_ptr<PingPacket> p) {
 		auto pong = std::make_shared<PongPacket>();
@@ -70,6 +72,8 @@ static std::shared_ptr<znet::Codec> makeCodec() {
 	codec->Add(PACKET_KEEPALIVE, std::make_unique<KeepAliveSerializer>());
 	codec->Add(PACKET_PING, std::make_unique<PingSerializer>());
 	codec->Add(PACKET_PONG, std::make_unique<PongSerializer>());
+	codec->Add(PACKET_CHAT_MESSAGE, std::make_unique<ChatMessageSerializer>());
+	codec->Add(PACKET_PLAYER_PING_SNAPSHOT, std::make_unique<PlayerPingSnapshotSerializer>());
 
 	// Voice Packets
 	codec->Add(G_TEAM_VOICE_SESSION_PACKET_ID, std::make_unique<gTeamVoiceSessionSerializer>());

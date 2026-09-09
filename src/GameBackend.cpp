@@ -1,5 +1,6 @@
 #include "GameBackend.h"
 #include "NetworkManager.h"
+#include "NetworkSynchronizer.h"
 #include <chrono>
 
 GameBackend::GameBackend() {
@@ -96,6 +97,7 @@ void GameBackend::onPacketReceived(std::shared_ptr<znet::Packet> packet) {
 		for (auto it = roomPlayers.begin(); it != roomPlayers.end(); ++it) {
 			if (it->id == p->netid) {
 				roomPlayers.erase(it);
+				chatRateStamps.erase(p->netid);
 				publishPlayerCount();
 				broadcastLobbyState();
 				break;
@@ -119,6 +121,16 @@ void GameBackend::onPacketReceived(std::shared_ptr<znet::Packet> packet) {
 	if (packet->id() == PACKET_NODE_KILLED) {
 		auto p = std::static_pointer_cast<PlayerKilledPacket>(packet);
 		if (onplayerkilled) onplayerkilled(p->killerId, p->victimId);
+		return;
+	}
+
+	if (packet->id() == PACKET_PLAYER_PING_SNAPSHOT) {
+		auto p = std::static_pointer_cast<PlayerPingSnapshotPacket>(packet);
+		std::lock_guard<std::mutex> lock(pingsmutex);
+		remotePings.clear();
+		for (size_t i = 0; i < p->playerIds.size(); i++) {
+			remotePings[p->playerIds[i]] = static_cast<int>(p->playerPings[i]);
+		}
 		return;
 	}
 
@@ -156,6 +168,43 @@ void GameBackend::onPacketReceived(std::shared_ptr<znet::Packet> packet) {
 			}
 		}
 		if (teamchanged && onteamchanged) onteamchanged(ev->netid, ev->team);
+		return;
+	}
+
+	if (packet->id() == PACKET_CHAT_MESSAGE) {
+		auto p = std::static_pointer_cast<ChatMessagePacket>(packet);
+		// The input box only accepts printable ASCII, but a modified client is
+		// not bound by it, so the same restriction is applied to anything that
+		// arrives over the network before it reaches a screen.
+		p->text.erase(std::remove_if(p->text.begin(), p->text.end(),
+			[](unsigned char c) { return c < 32 || c > 126; }), p->text.end());
+		if (p->text.empty()) return;
+		if (p->text.size() > ChatManager::MAX_TEXT_LENGTH) p->text.resize(ChatManager::MAX_TEXT_LENGTH);
+
+		if (isServer()) {
+			// The host is the only peer that routes, so it is the only one that
+			// has to validate. Name and team are read from roomPlayers, which is
+			// why this runs here on the main thread and not in the handler.
+			const RoomPlayerInfo* sender = nullptr;
+			for (const auto& rp : roomPlayers) {
+				if (rp.id == p->senderId) { sender = &rp; break; }
+			}
+			if (!sender) return;
+			if (!allowChatRate(p->senderId)) return;
+			if (p->channel == CHAT_PRIVATE) {
+				bool targetExists = false;
+				for (const auto& rp : roomPlayers) {
+					if (rp.id == p->targetId) { targetExists = true; break; }
+				}
+				if (!targetExists) return;
+			}
+			p->senderName = sender->name;
+			relayChat(p);
+		}
+
+		if (shouldDisplayChat(p)) {
+			ChatManager::getInstance()->receive(p->channel, p->senderId, p->senderName, p->text);
+		}
 		return;
 	}
 
@@ -263,6 +312,43 @@ void GameBackend::onPacketReceived(std::shared_ptr<znet::Packet> packet) {
 
 
 
+// The host sees every message before routing it, including ones meant for the
+// other team or for two other players. Without this it would display them all.
+bool GameBackend::shouldDisplayChat(const std::shared_ptr<ChatMessagePacket>& p) const {
+	if (!isServer()) return true;
+	uint32_t localId = NetworkSynchronizer::getInstance()->getLocalNodeId();
+	if (p->channel == CHAT_ALL) return true;
+	if (p->channel == CHAT_TEAM) {
+		// localTeam only tracks in-match team assignment; the lobby's team
+		// switch updates roomPlayers alone. Resolving both sides from
+		// roomPlayers is the only way this is correct in the lobby, and it also
+		// makes a dedicated server (on no team, absent from roomPlayers) fall
+		// through to false instead of matching everyone by localTeam's default.
+		uint8_t senderTeam = 0, myTeam = 0;
+		bool sfound = false, mfound = false;
+		for (const auto& rp : roomPlayers) {
+			if (rp.id == p->senderId) { senderTeam = rp.team; sfound = true; }
+			if (rp.id == localId)     { myTeam = rp.team;     mfound = true; }
+		}
+		return sfound && mfound && senderTeam == myTeam;
+	}
+	if (p->channel == CHAT_PRIVATE) return p->targetId == localId || p->senderId == localId;
+	return false;
+}
+
+// Three messages a second per player. Enough for conversation, not enough to
+// flood every other client off the server.
+bool GameBackend::allowChatRate(uint32_t senderId) {
+	using clock = std::chrono::steady_clock;
+	float now = std::chrono::duration<float>(clock::now().time_since_epoch()).count();
+	auto& stamps = chatRateStamps[senderId];
+	stamps.erase(std::remove_if(stamps.begin(), stamps.end(),
+		[now](float t) { return now - t > 1.0f; }), stamps.end());
+	if (stamps.size() >= 3) return false;
+	stamps.push_back(now);
+	return true;
+}
+
 void GameBackend::update(float deltaTime) {
 	std::vector<std::shared_ptr<znet::Packet>> batch;
 	std::vector<std::function<void()>> tasks;
@@ -320,6 +406,7 @@ void GameBackend::update(float deltaTime) {
 				uint64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 				auto ping = std::make_shared<PingPacket>();
 				ping->timestamp = now;
+				ping->reportedPing = static_cast<uint32_t>(std::max(0, currentPing.load(std::memory_order_relaxed)));
 				sendPacket(ping);
 			}
 		}
@@ -429,4 +516,9 @@ void GameBackend::onPongReceived(uint64_t timestamp) {
 	uint64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 	int rtt = (now >= timestamp) ? static_cast<int>(now - timestamp) : 0;
 	currentPing.store(rtt, std::memory_order_relaxed);
+}
+
+std::unordered_map<uint32_t, int> GameBackend::getRemotePings() const {
+	std::lock_guard<std::mutex> lock(pingsmutex);
+	return remotePings;
 }

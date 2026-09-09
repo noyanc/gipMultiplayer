@@ -1,13 +1,21 @@
 #pragma once
 
-#include "GameBackend.h"
+#include "gipMultiplayerTypes.h"
 #include <atomic>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <vector>
 
 namespace znet {
     class Client;
+    class Packet;
 }
+
+// Transport lives behind the facade; the game never names it.
+class GameBackend;
+class LobbyStatePacket;
 
 class NetworkManager {
 public:
@@ -96,9 +104,25 @@ public:
 
     std::string getPlayerName(uint32_t netId) const;
 
+    // Plain-type facade. The game uses these instead of reaching for the
+    // backend, so no transport type appears in game code.
+    bool isConnected() const;
+    uint8_t getLocalTeam() const;
+    // A copy, safe to read from any thread. roomPlayers itself is main-thread
+    // only, so handing out a reference would make that easy to violate.
+    std::vector<RoomPlayerInfo> getRoomPlayers() const;
+    // Enters a match that is already running, for global-server lobbies. This
+    // is NOT startMatch(): there is no ready-gate and no host check, and it
+    // only triggers the local match transition.
+    void enterMatchInProgress();
+    // Returns 0 when no player in the room carries that name. Case-sensitive,
+    // matching how names are compared everywhere else in the lobby.
+    uint32_t findPlayerIdByName(const std::string& name) const;
+
     // Callbacks for UI
     void setOnServerQueried(std::function<void(std::string, std::string, std::string, std::string, std::string, bool, bool, bool)> cb) { onServerQueried = cb; }
-    void setOnLobbyStateUpdated(std::function<void(std::shared_ptr<LobbyStatePacket>)> cb) { onLobbyStateUpdated = cb; }
+    // Lobby snapshot: the player list plus the two room-wide flags.
+    void setOnLobbyStateUpdated(std::function<void(const std::vector<RoomPlayerInfo>&, bool isGlobalServer, bool matchInProgress)> cb) { onLobbyStateUpdated = cb; }
     void setOnMatchStarted(std::function<void()> cb) { onMatchStarted = cb; }
     // A disconnect can land while nothing is listening: the lobby canvas clears
     // its handler on the way out and the game canvas only registers its own in
@@ -114,7 +138,7 @@ public:
     void setOnKicked(std::function<void(std::string)> cb) { onKicked = cb; }
 
     std::function<void(std::string, std::string, std::string, std::string, std::string, bool, bool, bool)> onServerQueried;
-    std::function<void(std::shared_ptr<LobbyStatePacket>)> onLobbyStateUpdated;
+    std::function<void(const std::vector<RoomPlayerInfo>&, bool, bool)> onLobbyStateUpdated;
     std::function<void()> onMatchStarted;
     std::function<void()> onDisconnected;
     std::function<void(std::string)> onKicked;
@@ -123,12 +147,9 @@ public:
     // uses this so its loop runs through update() like the game's does.
     void useBackend(std::shared_ptr<GameBackend> next);
 
-    // The active backend, or null when not connected. Shared, because a join
-    // running on another thread can swap it out at any moment: hold the handle
-    // for as long as you use it rather than calling this twice.
+    // Plugin-internal. Returns null when not connected. The game must use the
+    // plain-type accessors instead; nothing in game_martyr may call this.
     std::shared_ptr<GameBackend> getBackend() const;
-
-    std::shared_ptr<LobbyStatePacket> currentLobbyState;
 
     // Call this from the game's main update loop to process network events
     void update(float deltaTime);
@@ -174,6 +195,7 @@ private:
     mutable std::mutex backendMutex;
     uint64_t joinGeneration = 0;
     std::shared_ptr<GameBackend> backend;
+    std::shared_ptr<LobbyStatePacket> currentLobbyState;
     bool wantsDisconnect = false;
     // A disconnect that arrived with no handler registered, replayed by
     // setOnDisconnected once one is.

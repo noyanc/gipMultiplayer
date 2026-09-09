@@ -1,4 +1,5 @@
 #include "NetworkSynchronizer.h"
+#include "GameBackend.h"
 #include <iostream>
 #include <random>
 #include <chrono>
@@ -51,6 +52,18 @@ void NetworkSynchronizer::setup() {
     }
     backend->setLocalTeam(myTeam);
 
+    // Seed every other player already in the room with their actual starting
+    // team. Without this, getRemoteTeam() falls back to team 1 for anyone who
+    // hasn't switched teams since joining - which silently defeats the
+    // friendly-fire check in generateBullet() whenever the local player is
+    // also team 1.
+    {
+        std::lock_guard<std::mutex> lock(playersmutex);
+        for (auto& rp : backend->roomPlayers) {
+            if (rp.id != localmultiplayerboxid) remoteteams[rp.id] = rp.team;
+        }
+    }
+
     backend->setOnTeamChanged([this](uint32_t id, uint8_t teamId) {
         {
             std::lock_guard<std::mutex> lock(playersmutex);
@@ -69,9 +82,22 @@ void NetworkSynchronizer::setup() {
         box->setPosition(1.5f, 0.25f, 1.5f);
 
         backend->attachNode(id, box, false);
+
+        // Same fallback-to-team-1 problem as above: onJoin only carries an
+        // id, so without this the newly joined player's team is unknown
+        // until they explicitly switch.
+        uint8_t joinedTeam = 1;
+        for (auto& rp : backend->roomPlayers) {
+            if (rp.id == id) {
+                joinedTeam = rp.team;
+                break;
+            }
+        }
+
         {
             std::lock_guard<std::mutex> lock(playersmutex);
             remotemultiplayerboxes[id] = std::move(box);
+            remoteteams[id] = joinedTeam;
         }
     });
 
@@ -152,6 +178,11 @@ uint8_t NetworkSynchronizer::getRemoteTeam(uint32_t id) const {
     return it != remoteteams.end() ? it->second : 1;
 }
 
+std::unordered_map<uint32_t, int> NetworkSynchronizer::getRemotePings() const {
+    auto backend = NetworkManager::getInstance()->getBackend();
+    return backend ? backend->getRemotePings() : std::unordered_map<uint32_t, int>();
+}
+
 
 
 void NetworkSynchronizer::switchTeam() {
@@ -159,6 +190,12 @@ void NetworkSynchronizer::switchTeam() {
     if (backend) {
         uint8_t newTeam = backend->getLocalTeam() == 1 ? 2 : 1;
         backend->setLocalTeam(newTeam);
+        // roomPlayers is what the room list and team message routing read, and
+        // it only follows a SwitchTeamPacket. Setting localTeam alone left the
+        // two disagreeing after a switch made during a match: the player moved
+        // team for position and damage purposes while their team messages kept
+        // going to the team they had just left.
+        NetworkManager::getInstance()->switchTeam(newTeam);
     }
 }
 

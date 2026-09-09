@@ -21,7 +21,7 @@ constexpr uint64_t LOCAL_HOST_VOICE_CONN_ID = 0xFFFFFFFFFFFFFFFFULL;
 class ServerPacketHandler : public znet::PacketHandler<ServerPacketHandler,
 	NodeStatePacket, NodeLeavePacket, PlayerFirePacket, PlayerHitPacket, PlayerKilledPacket,
 	ServerQueryReqPacket, LobbyJoinPacket, ToggleReadyPacket, SwitchTeamPacket, StartMatchPacket,
-	KeepAlivePacket, PingPacket, PongPacket, gTeamVoiceUplinkPacket> {
+	KeepAlivePacket, PingPacket, PongPacket, ChatMessagePacket, gTeamVoiceUplinkPacket> {
 public:
 	ServerPacketHandler(GameBackendLocal* b, znet::PeerSession* s) : backend(b), peersession(s) {}
 
@@ -89,10 +89,24 @@ public:
 		auto pong = std::make_shared<PongPacket>();
 		pong->timestamp = p->timestamp;
 		peersession->SendPacket(pong);
+
+		if (auto idptr = peersession->template user_pointer<uint32_t>()) {
+			if (*idptr != 0) backend->reportPlayerPing(*idptr, static_cast<int>(p->reportedPing));
+		}
 	}
 
 	void OnPacket(std::shared_ptr<PongPacket> p) {
 		backend->onPongReceived(p->timestamp);
+	}
+
+	void OnPacket(std::shared_ptr<ChatMessagePacket> p) {
+		// Anti-spoof: the sender is whoever this session was tagged as, never
+		// what the packet claims. Nothing else happens on the network thread -
+		// routing needs roomPlayers, which is main-thread only.
+		if (auto idptr = peersession->template user_pointer<uint32_t>()) {
+			p->senderId = *idptr;
+		}
+		backend->enqueuePacket(std::static_pointer_cast<znet::Packet>(p));
 	}
 
 	// Voice Uplink from remote client
@@ -130,6 +144,8 @@ static std::shared_ptr<znet::Codec> makeCodec() {
 	codec->Add(PACKET_KEEPALIVE, std::make_unique<KeepAliveSerializer>());
 	codec->Add(PACKET_PING, std::make_unique<PingSerializer>());
 	codec->Add(PACKET_PONG, std::make_unique<PongSerializer>());
+	codec->Add(PACKET_CHAT_MESSAGE, std::make_unique<ChatMessageSerializer>());
+	codec->Add(PACKET_PLAYER_PING_SNAPSHOT, std::make_unique<PlayerPingSnapshotSerializer>());
 
 	// Voice Packets
 	codec->Add(G_TEAM_VOICE_SESSION_PACKET_ID, std::make_unique<gTeamVoiceSessionSerializer>());
@@ -436,6 +452,12 @@ void GameBackendLocal::update(float deltaTime) {
         broadcast(lp);
     }
 
+    pingSnapshotTimer += deltaTime;
+    if (pingSnapshotTimer >= 1.0f) {
+        pingSnapshotTimer = 0.0f;
+        broadcastPingSnapshot();
+    }
+
     if (!isDedicatedServer) {
         voiceClient.updateNetwork([this](const gTeamVoiceUplinkPacket& packet) {
             voiceRouter.handleVoicePacket(LOCAL_HOST_VOICE_CONN_ID, packet);
@@ -466,6 +488,42 @@ void GameBackendLocal::broadcast(const std::shared_ptr<znet::Packet>& packet, zn
 	std::lock_guard<std::mutex> lk(sessionsmutex);
 	for (auto& s : sessions) {
 		if (s && s.get() != exclude) s->SendPacket(packet);
+	}
+}
+
+void GameBackendLocal::sendToPlayer(uint32_t netId, const std::shared_ptr<znet::Packet>& packet) {
+	std::lock_guard<std::mutex> lk(sessionsmutex);
+	for (auto& s : sessions) {
+		if (!s) continue;
+		auto idptr = s->template user_pointer<uint32_t>();
+		if (idptr && *idptr == netId) {
+			s->SendPacket(packet);
+			return;
+		}
+	}
+}
+
+void GameBackendLocal::relayChat(const std::shared_ptr<ChatMessagePacket>& p) {
+	if (p->channel == CHAT_ALL) {
+		// Not excluding the sender: that is how a client sees its own message.
+		broadcast(p);
+		return;
+	}
+	if (p->channel == CHAT_TEAM) {
+		uint8_t senderTeam = 0;
+		bool found = false;
+		for (const auto& rp : roomPlayers) {
+			if (rp.id == p->senderId) { senderTeam = rp.team; found = true; break; }
+		}
+		if (!found) return;
+		for (const auto& rp : roomPlayers) {
+			if (rp.team == senderTeam) sendToPlayer(rp.id, p);
+		}
+		return;
+	}
+	if (p->channel == CHAT_PRIVATE) {
+		sendToPlayer(p->targetId, p);
+		if (p->senderId != p->targetId) sendToPlayer(p->senderId, p);
 	}
 }
 
@@ -575,6 +633,28 @@ void GameBackendLocal::broadcastKillEvent(uint32_t killerId, uint32_t victimId) 
 	auto p = std::make_shared<PlayerKilledPacket>();
 	p->killerId = killerId;
 	p->victimId = victimId;
+	broadcast(p);
+}
+
+void GameBackendLocal::reportPlayerPing(uint32_t playerId, int pingMs) {
+	std::lock_guard<std::mutex> lock(hostpingsmutex);
+	hostPlayerPings[playerId] = pingMs;
+}
+
+std::unordered_map<uint32_t, int> GameBackendLocal::getRemotePings() const {
+	std::lock_guard<std::mutex> lock(hostpingsmutex);
+	return hostPlayerPings;
+}
+
+void GameBackendLocal::broadcastPingSnapshot() {
+	auto p = std::make_shared<PlayerPingSnapshotPacket>();
+	{
+		std::lock_guard<std::mutex> lock(hostpingsmutex);
+		for (auto& kv : hostPlayerPings) {
+			p->playerIds.push_back(kv.first);
+			p->playerPings.push_back(static_cast<uint32_t>(kv.second));
+		}
+	}
 	broadcast(p);
 }
 

@@ -46,6 +46,10 @@ public:
 
     uint8_t getRemoteTeam(uint32_t id) const;
 
+    // Every known player's ping in milliseconds, keyed by id. Safe from any
+    // thread.
+    std::unordered_map<uint32_t, int> getRemotePings() const;
+
     void sendFireEvent(uint8_t gunType, float ox, float oy, float oz, float dx, float dy, float dz);
     void sendHitEvent(uint32_t victimId, float damage);
     void sendKillEvent(uint32_t killerId, uint32_t victimId);

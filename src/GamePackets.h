@@ -16,6 +16,7 @@
 #include "znet/packet_serializer.h"
 #include "znet/buffer.h"
 #include "znet/peer_session.h"
+#include "gipMultiplayerTypes.h"
 
 // Packet IDs - must be unique per packet type
 enum : znet::PacketId {
@@ -34,7 +35,11 @@ enum : znet::PacketId {
     PACKET_LOBBY_KICK,
     PACKET_KEEPALIVE,
     PACKET_PING,
-    PACKET_PONG
+    PACKET_PONG,
+    // Appended deliberately: ids are positional, so a new id anywhere above
+    // this line silently renumbers every packet after it.
+    PACKET_CHAT_MESSAGE,
+    PACKET_PLAYER_PING_SNAPSHOT
 };
 
 class KeepAlivePacket : public znet::Packet {
@@ -56,17 +61,23 @@ class PingPacket : public znet::Packet {
 public:
     PingPacket() : Packet(PACKET_PING) {}
     uint64_t timestamp = 0;
+    // The sender's own last-measured RTT to the host, one tick stale. The
+    // host has no RTT of its own to a client; this is how it learns one, to
+    // relay onward in PlayerPingSnapshotPacket.
+    uint32_t reportedPing = 0;
 };
 
 class PingSerializer : public znet::PacketSerializer<PingPacket> {
 public:
     std::shared_ptr<znet::Buffer> SerializeTyped(std::shared_ptr<PingPacket> p, std::shared_ptr<znet::Buffer> b) override {
         b->WriteInt<uint64_t>(p->timestamp);
+        b->WriteInt<uint32_t>(p->reportedPing);
         return b;
     }
     std::shared_ptr<PingPacket> DeserializeTyped(std::shared_ptr<znet::Buffer> b) override {
         auto p = std::make_shared<PingPacket>();
         p->timestamp = b->ReadInt<uint64_t>();
+        p->reportedPing = b->ReadInt<uint32_t>();
         return p;
     }
 };
@@ -417,6 +428,72 @@ public:
         p->reason = b->ReadString();
         return p;
     }
+};
+
+// One text message travelling client -> host -> recipients. CHAT_SYSTEM and
+// CHAT_KILL never appear on the wire; clients generate those locally.
+class ChatMessagePacket : public znet::Packet {
+public:
+	ChatMessagePacket() : Packet(PACKET_CHAT_MESSAGE) {}
+	uint32_t senderId = 0;
+	uint32_t targetId = 0;   // CHAT_PRIVATE only, 0 otherwise
+	uint8_t channel = CHAT_ALL;
+	std::string senderName;  // stamped by the host, never trusted from a client
+	std::string text;
+};
+
+class ChatMessageSerializer : public znet::PacketSerializer<ChatMessagePacket> {
+public:
+	std::shared_ptr<znet::Buffer> SerializeTyped(std::shared_ptr<ChatMessagePacket> p, std::shared_ptr<znet::Buffer> b) override {
+		b->WriteInt<uint32_t>(p->senderId);
+		b->WriteInt<uint32_t>(p->targetId);
+		b->WriteInt<uint8_t>(p->channel);
+		b->WriteString(p->senderName);
+		b->WriteString(p->text);
+		return b;
+	}
+	std::shared_ptr<ChatMessagePacket> DeserializeTyped(std::shared_ptr<znet::Buffer> b) override {
+		auto p = std::make_shared<ChatMessagePacket>();
+		p->senderId = b->ReadInt<uint32_t>();
+		p->targetId = b->ReadInt<uint32_t>();
+		p->channel = b->ReadInt<uint8_t>();
+		p->senderName = b->ReadString();
+		p->text = b->ReadString();
+		return p;
+	}
+};
+
+// Host -> all clients, once a second: every known player's ping, relayed
+// from what each client last reported on its own PingPacket. Parallel
+// arrays, same shape as LobbyStatePacket's player list.
+class PlayerPingSnapshotPacket : public znet::Packet {
+public:
+	PlayerPingSnapshotPacket() : Packet(PACKET_PLAYER_PING_SNAPSHOT) {}
+	std::vector<uint32_t> playerIds;
+	std::vector<uint32_t> playerPings;
+};
+
+class PlayerPingSnapshotSerializer : public znet::PacketSerializer<PlayerPingSnapshotPacket> {
+public:
+	std::shared_ptr<znet::Buffer> SerializeTyped(std::shared_ptr<PlayerPingSnapshotPacket> p, std::shared_ptr<znet::Buffer> b) override {
+		b->WriteVarInt(p->playerIds.size());
+		for (size_t i = 0; i < p->playerIds.size(); i++) {
+			b->WriteInt<uint32_t>(p->playerIds[i]);
+			b->WriteInt<uint32_t>(p->playerPings[i]);
+		}
+		return b;
+	}
+	std::shared_ptr<PlayerPingSnapshotPacket> DeserializeTyped(std::shared_ptr<znet::Buffer> b) override {
+		auto p = std::make_shared<PlayerPingSnapshotPacket>();
+		size_t count = b->ReadVarInt<size_t>();
+		// Eight bytes an entry at the very least, so a bigger count is corrupt.
+		if (count > b->readable_bytes()) return p;
+		for (size_t i = 0; i < count; i++) {
+			p->playerIds.push_back(b->ReadInt<uint32_t>());
+			p->playerPings.push_back(b->ReadInt<uint32_t>());
+		}
+		return p;
+	}
 };
 
 #endif //GAMEPACKETS_H

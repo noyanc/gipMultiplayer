@@ -30,6 +30,7 @@ list(APPEND PLUGIN_SRCS
 		${PLUGIN_DIR}/src/NetworkManager.cpp
 		${PLUGIN_DIR}/src/NetworkSynchronizer.cpp
 		${PLUGIN_DIR}/src/master/gServerBrowser.cpp
+		${PLUGIN_DIR}/src/chat/ChatManager.cpp
 )
 
 ##### PLUGIN HEADERS #####

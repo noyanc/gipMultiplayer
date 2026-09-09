@@ -17,7 +17,11 @@
 
 #include "GamePackets.h"
 #include "gNode.h"
+#include "gipMultiplayerTypes.h"
+#include "chat/ChatManager.h"
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <mutex>
 #include <vector>
 #include <unordered_map>
@@ -103,12 +107,8 @@ public:
 	std::function<void(std::shared_ptr<LobbyStatePacket>)> onLobbyStateUpdated;
 	std::function<void()> onMatchStarted;
 
-	struct RoomPlayerState {
-		uint32_t id;
-		std::string name;
-		uint8_t team;
-		bool isReady;
-	};
+	// Was a nested struct; now one definition shared with the game-facing API.
+	using RoomPlayerState = RoomPlayerInfo;
 	// Main thread only. Off it, read playerCount() instead.
 	std::vector<RoomPlayerState> roomPlayers;
 	bool matchInProgress = false;
@@ -122,6 +122,12 @@ public:
 
 	int getPing() const { return currentPing.load(std::memory_order_relaxed); }
 	void onPongReceived(uint64_t timestamp);
+
+	// Every known player's ping, last relayed by the host via
+	// PlayerPingSnapshotPacket. Safe from any thread. GameBackendLocal
+	// overrides this to return its own directly-measured map instead of
+	// waiting on its own broadcast.
+	virtual std::unordered_map<uint32_t, int> getRemotePings() const;
 
 	// Voice Chat Interface
 	virtual bool initializeVoice() { return false; }
@@ -163,6 +169,18 @@ protected:
 	virtual void broadcastHitEvent(uint32_t attackerId, uint32_t victimId, float damage) = 0;
 	virtual void broadcastKillEvent(uint32_t killerId, uint32_t victimId) = 0;
 
+	// Host-only fan-out. A client receives only what was routed to it, so its
+	// implementation does nothing.
+	virtual void relayChat(const std::shared_ptr<ChatMessagePacket>& p) {}
+	// True when this peer is a legitimate recipient of the message. On a client
+	// that is always true; the host has to check, because every channel passes
+	// through its own onPacketReceived on the way to being routed.
+	bool shouldDisplayChat(const std::shared_ptr<ChatMessagePacket>& p) const;
+
+	bool allowChatRate(uint32_t senderId);
+	// Main thread only, touched from onPacketReceived alone.
+	std::unordered_map<uint32_t, std::vector<float>> chatRateStamps;
+
 protected:
 	std::mutex queueMutex;
 	std::vector<std::shared_ptr<znet::Packet>> packetQueue;
@@ -192,6 +210,8 @@ protected:
 	float keepAliveTimer = 0.f;
 	float pingTimer = 0.f;
 	std::atomic<int> currentPing{0};
+	mutable std::mutex pingsmutex;
+	std::unordered_map<uint32_t, int> remotePings;
 	bool disconnectNotified = false;
 	bool isDedicatedServer = false;
 

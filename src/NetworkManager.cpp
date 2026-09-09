@@ -1,6 +1,8 @@
 #include "NetworkManager.h"
+#include "GameBackend.h"
 #include "GameBackendLocal.h"
 #include "GameBackendRemote.h"
+#include "chat/ChatManager.h"
 #include <thread>
 #include "NetworkSynchronizer.h" // For getLocalNodeId
 #include <random>
@@ -235,6 +237,11 @@ uint64_t NetworkManager::beginJoin() {
         backend.reset();
         generation = ++joinGeneration;
     }
+    // Every host or join attempt starts here, so this is the one chokepoint
+    // that always runs before a new session's packets can arrive - a kick or
+    // a dropped connection skips disconnect()'s wantsDisconnect branch, but
+    // never skips this.
+    ChatManager::getInstance()->clear();
     return generation;
 }
 
@@ -256,7 +263,12 @@ void NetworkManager::wireBackend(const std::shared_ptr<GameBackend>& next) {
     next->setHearEnemiesVoice(hearEnemiesVoice.load());
     next->setOnLobbyStateUpdated([this](std::shared_ptr<LobbyStatePacket> p) {
         currentLobbyState = p;
-        if (onLobbyStateUpdated) onLobbyStateUpdated(p);
+        std::vector<RoomPlayerInfo> players;
+        players.reserve(p->playerIds.size());
+        for (size_t i = 0; i < p->playerIds.size(); i++) {
+            players.push_back({p->playerIds[i], p->playerNames[i], p->playerTeams[i], p->playerReadys[i] != 0});
+        }
+        if (onLobbyStateUpdated) onLobbyStateUpdated(players, p->isGlobalServer, p->matchInProgress);
     });
     next->setOnMatchStarted([this]() { if (onMatchStarted) onMatchStarted(); });
     next->setOnDisconnected([this]() {
@@ -271,8 +283,11 @@ void NetworkManager::disconnect() {
 }
 
 void NetworkManager::update(float deltaTime) {
+    ChatManager::getInstance()->update(deltaTime);
+
     if (wantsDisconnect) {
         setBackend(nullptr);
+        ChatManager::getInstance()->clear();
         wantsDisconnect = false;
         if (onDisconnected) onDisconnected();
     }
@@ -595,6 +610,38 @@ std::string NetworkManager::getPlayerName(uint32_t netId) const {
         }
     }
     return "";
+}
+
+bool NetworkManager::isConnected() const {
+    return getBackend() != nullptr;
+}
+
+uint8_t NetworkManager::getLocalTeam() const {
+    auto active = getBackend();
+    return active ? active->getLocalTeam() : 1;
+}
+
+std::vector<RoomPlayerInfo> NetworkManager::getRoomPlayers() const {
+    auto active = getBackend();
+    if (!active) return {};
+    return active->roomPlayers;
+}
+
+void NetworkManager::enterMatchInProgress() {
+    auto active = getBackend();
+    if (!active) return;
+    // Local only: it drives this client's own onMatchStarted. The host decides
+    // when the match actually begins.
+    active->enqueuePacket(std::make_shared<StartMatchPacket>());
+}
+
+uint32_t NetworkManager::findPlayerIdByName(const std::string& name) const {
+    auto active = getBackend();
+    if (!active) return 0;
+    for (const auto& rp : active->roomPlayers) {
+        if (rp.name == name) return rp.id;
+    }
+    return 0;
 }
 
 void NetworkManager::pushQueryResult(const std::string& name, const std::string& format, const std::string& sizeStr,

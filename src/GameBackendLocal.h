@@ -59,6 +59,12 @@ public:
 	void handleVoiceDownlinkPacket(const gTeamVoiceDownlinkPacket& p);
 	void syncVoicePeerStates();
 
+	// Called from ServerPacketHandler::OnPacket(PingPacket) with what a
+	// client just reported about its own RTT to us. Fed to
+	// broadcastPingSnapshot() once a second.
+	void reportPlayerPing(uint32_t playerId, int pingMs);
+	std::unordered_map<uint32_t, int> getRemotePings() const override;
+
 protected:
 	void broadcastState(uint32_t netid, float x, float y, float z, float yaw, uint8_t team, uint8_t animState) override;
 	void broadcastLobbyState() override;
@@ -66,6 +72,12 @@ protected:
 	void broadcastFireEvent(uint32_t shooterId, uint8_t gunType, float ox, float oy, float oz, float dx, float dy, float dz) override;
 	void broadcastHitEvent(uint32_t attackerId, uint32_t victimId, float damage) override;
 	void broadcastKillEvent(uint32_t killerId, uint32_t victimId) override;
+	void broadcastPingSnapshot();
+
+	void relayChat(const std::shared_ptr<ChatMessagePacket>& p) override;
+	// Sends to one player's session. Does nothing for the host's own id: the
+	// host has no session to itself and is delivered to directly.
+	void sendToPlayer(uint32_t netId, const std::shared_ptr<znet::Packet>& packet);
 
 protected:
 	void broadcast(const std::shared_ptr<znet::Packet>& packet, znet::PeerSession* exclude = nullptr);
@@ -78,6 +90,10 @@ protected:
 
 	std::mutex sessionsmutex;
 	std::vector<std::shared_ptr<znet::PeerSession>> sessions;
+
+	mutable std::mutex hostpingsmutex;
+	std::unordered_map<uint32_t, int> hostPlayerPings;
+	float pingSnapshotTimer = 0.f;
 	
 	std::unique_ptr<znet::Server> server; // Declared last so it gets destroyed first
 	std::unique_ptr<znet::Server> queryServer;
