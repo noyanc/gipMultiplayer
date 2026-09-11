@@ -53,6 +53,11 @@ public:
     uint8_t getLobbyTeamSize() const { return lobbyTeamSize; }
     void setLobbyTeamSize(uint8_t size) { lobbyTeamSize = size; }
 
+    // Console chatter from znet and from the plugin. Off by default; warnings
+    // and errors print either way. Set it before connecting to anything.
+    void setVerboseLogging(bool verbose);
+    bool isVerboseLogging() const;
+
     void toggleReady();
     void switchTeam(uint8_t teamId);
     void startMatch(); // Only works if isHost() is true

@@ -1,4 +1,5 @@
 #include "GameBackendServer.h"
+#include "MultiplayerLog.h"
 #include "NetworkManager.h"
 #include <iostream>
 
@@ -17,7 +18,7 @@ GameBackendServer::GameBackendServer(const std::string& bindIp, uint16_t port, c
 
 void GameBackendServer::start() {
     GameBackendLocal::start();
-    std::cout << "[DedicatedServer] Listening on port " << port << std::endl;
+    MP_LOG_INFO("[DedicatedServer] Listening on port " << port);
     // Dedicated servers have no password by default. A second reflector is
     // passed only when one behind NAT was configured with it.
     registerWithMasterServer(serverName, false, "", targetMasterIp, targetMasterPort, targetMasterRelayPort, targetExtraReflector, publicIp, useP2P);

@@ -1,4 +1,5 @@
 #include "NetworkSynchronizer.h"
+#include "MultiplayerLog.h"
 #include "GameBackend.h"
 #include <iostream>
 #include <random>
@@ -69,7 +70,7 @@ void NetworkSynchronizer::setup() {
             std::lock_guard<std::mutex> lock(playersmutex);
             remoteteams[id] = teamId;
         }
-        std::cout << "Multiplayer: Remote Player " << id << " switched to Team " << (int)teamId << std::endl;
+        MP_LOG_INFO("Multiplayer: Remote Player " << id << " switched to Team " << (int)teamId);
     });
 
     backend->setOnJoin([this](uint32_t id) {

@@ -1,4 +1,5 @@
 #include "GameBackendLocal.h"
+#include "MultiplayerLog.h"
 #include "NetworkManager.h"
 #include "voice/gTeamVoicePackets.h"
 #include <algorithm>
@@ -44,7 +45,7 @@ public:
 		backend->broadcast(p, peersession); //except the host
 	}
 	void OnPacket(std::shared_ptr<ServerQueryReqPacket> p) {
-		gLogi("ServerPacketHandler") << "<<< SERVER RECEIVED PING! Sending response...";
+		MP_GLOGI("ServerPacketHandler") << "<<< SERVER RECEIVED PING! Sending response...";
 		auto res = std::make_shared<ServerQueryResPacket>();
 		res->lobbyName = backend->serverName;
 
@@ -248,7 +249,7 @@ znet::p2p::Agent* GameBackendLocal::ensurePunchHost() {
 		return nullptr;
 	}
 	punchHost = std::move(host);
-	gLogi("GameBackendLocal") << "[Host] Punch socket open on port " << punchHost->punch_port();
+	MP_GLOGI("GameBackendLocal") << "[Host] Punch socket open on port " << punchHost->punch_port();
 	return punchHost.get();
 }
 
@@ -267,7 +268,7 @@ void GameBackendLocal::gatherCandidates() {
 			std::lock_guard<std::mutex> lk(gatherMutex);
 			gatheredCandidates = std::move(result.candidates);
 		}
-		gLogi("GameBackendLocal") << "[Host] Gathered " << gatheredCandidates.size() << " candidates (NAT " << znet::p2p::GetNatTypeString(result.nat_type) << ")";
+		MP_GLOGI("GameBackendLocal") << "[Host] Gathered " << gatheredCandidates.size() << " candidates (NAT " << znet::p2p::GetNatTypeString(result.nat_type) << ")";
 		// the register that went out on connect had none of these
 		auto session = masterClient ? masterClient->client_session() : nullptr;
 		if (isConnectedToMaster && session) session->SendPacket(makeRegisterPacket());
@@ -285,7 +286,7 @@ void GameBackendLocal::onPunchResolved(znet::Result result, std::shared_ptr<znet
 		return;
 	}
 	adoptSession(sess);
-	gLogi("GameBackendLocal") << "[Host] Punch successful via " << sess->remote_address()->readable();
+	MP_GLOGI("GameBackendLocal") << "[Host] Punch successful via " << sess->remote_address()->readable();
 }
 
 uint16_t GameBackendLocal::advertisedPort() const {
@@ -366,7 +367,7 @@ void GameBackendLocal::registerWithMasterServer(const std::string& name, bool is
             public:
                 MasterHandler(GameBackendLocal* be) : backend(be) {}
                 void OnPacket(std::shared_ptr<gMasterRegisterResponsePacket> p) {
-                    gLogi("GameBackendLocal") << "[Host] Master assigned Room Code: " << p->roomCode;
+                    MP_GLOGI("GameBackendLocal") << "[Host] Master assigned Room Code: " << p->roomCode;
                     {
                         std::lock_guard<std::mutex> lk(backend->roomCodeMutex);
                         backend->assignedRoomCode = p->roomCode;
@@ -380,7 +381,7 @@ void GameBackendLocal::registerWithMasterServer(const std::string& name, bool is
                     });
                 }
                 void OnPacket(std::shared_ptr<gMasterPunchExecutePacket> p) {
-                    gLogi("GameBackendLocal") << "[Host] Master requested punch to " << p->candidates.size() << " candidates.";
+                    MP_GLOGI("GameBackendLocal") << "[Host] Master requested punch to " << p->candidates.size() << " candidates.";
 
                     auto* host = backend->ensurePunchHost();
                     if (!host) return;
@@ -410,7 +411,7 @@ void GameBackendLocal::registerWithMasterServer(const std::string& name, bool is
             
             isConnectedToMaster = true;
 
-            gLogi("GameBackendLocal") << "Registering with the master server as " << advertisedAddress()
+            MP_GLOGI("GameBackendLocal") << "Registering with the master server as " << advertisedAddress()
                                       << " (dedicated: " << isDedicatedServer << ", p2p: " << useP2P << ")";
             sess->SendPacket(makeRegisterPacket());
             return false;

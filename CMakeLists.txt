@@ -27,6 +27,7 @@ list(APPEND PLUGIN_SRCS
 		${PLUGIN_DIR}/src/GameBackendLocal.cpp
 		${PLUGIN_DIR}/src/GameBackendRemote.cpp
 		${PLUGIN_DIR}/src/GameBackendServer.cpp
+		${PLUGIN_DIR}/src/MultiplayerLog.cpp
 		${PLUGIN_DIR}/src/NetworkManager.cpp
 		${PLUGIN_DIR}/src/NetworkSynchronizer.cpp
 		${PLUGIN_DIR}/src/master/gServerBrowser.cpp

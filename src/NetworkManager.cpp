@@ -8,6 +8,7 @@
 #include <random>
 #include "master/gMasterPackets.h"
 #include "gipP2PClient.h"
+#include "MultiplayerLog.h"
 #include <openssl/sha.h>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
@@ -998,4 +999,12 @@ void NetworkManager::autoLogin() {
     if (loadSession(email, token)) {
         loginWithToken(email, token);
     }
+}
+
+void NetworkManager::setVerboseLogging(bool verbose) {
+    gipmp::setVerboseLogging(verbose);
+}
+
+bool NetworkManager::isVerboseLogging() const {
+    return gipmp::isVerboseLogging();
 }

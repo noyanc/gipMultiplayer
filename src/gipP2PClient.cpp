@@ -1,4 +1,5 @@
 #include "gipP2PClient.h"
+#include "MultiplayerLog.h"
 #include "master/gMasterPackets.h"
 #include "znet/client.h"
 #include "znet/client_events.h"
@@ -68,8 +69,8 @@ public:
     explicit gBrokerHandler(std::shared_ptr<gStep<gBrokerReply>> reply) : reply_(std::move(reply)) {}
 
     void OnPacket(std::shared_ptr<gMasterPunchExecutePacket> p) {
-        std::cout << "[P2PClient] Broker sent " << p->candidates.size()
-                  << " candidates (isHost: " << p->isHost << ")" << std::endl;
+        MP_LOG_INFO("[P2PClient] Broker sent " << p->candidates.size()
+                  << " candidates (isHost: " << p->isHost << ")");
         gBrokerReply reply;
         reply.hasCandidates = true;
         reply.isHost = p->isHost;
@@ -103,7 +104,7 @@ gipP2PSession gipP2PClient::joinSession(const std::string& masterIp, uint16_t ma
     hostConfig.bind_port = localGamePort;
     auto host = std::make_unique<znet::p2p::Agent>(hostConfig);
     if (host->Start() != znet::Result::Success) {
-        std::cout << "[P2PClient] Could not open the punch socket on port " << localGamePort << std::endl;
+        MP_LOG_ERROR("[P2PClient] Could not open the punch socket on port " << localGamePort);
         return {};
     }
 
@@ -115,16 +116,16 @@ gipP2PSession gipP2PClient::joinSession(const std::string& masterIp, uint16_t ma
     if (extraReflector && extraReflector->is_valid()) reflectors.push_back(extraReflector);
     host->Gather(reflectors, GATHER_TIMEOUT, [gathered](znet::p2p::Agent::GatherResult result) {
         if (result.result != znet::Result::Success) {
-            std::cout << "[P2PClient] Gather: " << znet::GetResultString(result.result) << ", offering the local addresses" << std::endl;
+            MP_LOG_INFO("[P2PClient] Gather: " << znet::GetResultString(result.result) << ", offering the local addresses");
         }
         gathered->finish(std::move(result.candidates));
     });
     if (!gathered->wait(GATHER_TIMEOUT + std::chrono::seconds(1))) {
-        std::cout << "[P2PClient] Gather never resolved, giving up." << std::endl;
+        MP_LOG_ERROR("[P2PClient] Gather never resolved, giving up.");
         return {};
     }
 
-    std::cout << "[P2PClient] Connecting to Broker at " << masterIp << ":" << masterPort << "..." << std::endl;
+    MP_LOG_INFO("[P2PClient] Connecting to Broker at " << masterIp << ":" << masterPort << "...");
 
     auto reply = std::make_shared<gStep<gBrokerReply>>();
 
@@ -167,7 +168,7 @@ gipP2PSession gipP2PClient::joinSession(const std::string& masterIp, uint16_t ma
     masterClient.reset();
 
     if (!brokered.hasCandidates) {
-        std::cout << "[P2PClient] Broker sent no candidates, giving up." << std::endl;
+        MP_LOG_ERROR("[P2PClient] Broker sent no candidates, giving up.");
         return {};
     }
 
@@ -180,7 +181,7 @@ gipP2PSession gipP2PClient::joinSession(const std::string& masterIp, uint16_t ma
         offer.candidates.push_back(std::move(candidate));
     }
     if (offer.candidates.empty()) {
-        std::cout << "[P2PClient] No usable candidates, giving up." << std::endl;
+        MP_LOG_ERROR("[P2PClient] No usable candidates, giving up.");
         return {};
     }
     // the host accepts, so its options decide encryption and compression
@@ -196,16 +197,16 @@ gipP2PSession gipP2PClient::joinSession(const std::string& masterIp, uint16_t ma
     });
     // the punch, then the handshake, each within PUNCH_TIMEOUT
     if (!punched->wait(PUNCH_TIMEOUT * 2 + std::chrono::seconds(1))) {
-        std::cout << "[P2PClient] Punch never resolved, giving up." << std::endl;
+        MP_LOG_ERROR("[P2PClient] Punch never resolved, giving up.");
         return {};
     }
     const gPunchResult result = punched->take();
     if (result.result != znet::Result::Success || !result.session) {
-        std::cout << "[P2PClient] Punch failed: " << znet::GetResultString(result.result) << std::endl;
+        MP_LOG_ERROR("[P2PClient] Punch failed: " << znet::GetResultString(result.result));
         return {};
     }
 
-    std::cout << "[P2PClient] Punch successful via " << result.session->remote_address()->readable() << std::endl;
+    MP_LOG_INFO("[P2PClient] Punch successful via " << result.session->remote_address()->readable());
     gipP2PSession out;
     out.host = std::move(host);
     out.session = result.session;

@@ -1,4 +1,5 @@
 #include "GameBackend.h"
+#include "MultiplayerLog.h"
 #include "NetworkManager.h"
 #include "NetworkSynchronizer.h"
 #include <chrono>
@@ -242,7 +243,7 @@ void GameBackend::onPacketReceived(std::shared_ptr<znet::Packet> packet) {
 	// The following packets are ONLY handled by the Host.
 	if (packet->id() == PACKET_LOBBY_JOIN) {
 		auto p = std::static_pointer_cast<LobbyJoinPacket>(packet);
-		std::cout << "[GameBackend] Processing LOBBY_JOIN for ID: " << p->senderId << " Name: " << p->playerName << std::endl;
+		MP_LOG_INFO("[GameBackend] Processing LOBBY_JOIN for ID: " << p->senderId << " Name: " << p->playerName);
 		
 		// A join is resent until the lobby lists the sender, so the same one
 		// arriving twice has to mean the same player, not a second copy.
@@ -255,7 +256,7 @@ void GameBackend::onPacketReceived(std::shared_ptr<znet::Packet> packet) {
 
 		size_t maxSize = static_cast<size_t>(NetworkManager::getInstance()->getLobbyTeamSize()) * 2;
 		if (roomPlayers.size() >= maxSize) {
-			std::cout << "[GameBackend] Rejecting join, room is full!" << std::endl;
+			MP_LOG_ERROR("[GameBackend] Rejecting join, room is full!");
 			return; // Reject join if room is full
 		}
 		
@@ -278,7 +279,7 @@ void GameBackend::onPacketReceived(std::shared_ptr<znet::Packet> packet) {
 			duplicateCount++;
 		}
 		
-		std::cout << "[GameBackend] Added player " << p->senderId << " to roomPlayers as " << finalName << std::endl;
+		MP_LOG_INFO("[GameBackend] Added player " << p->senderId << " to roomPlayers as " << finalName);
 		roomPlayers.push_back({p->senderId, finalName, team, false});
 		publishPlayerCount();
 		broadcastLobbyState();
